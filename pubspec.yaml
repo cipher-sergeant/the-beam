@@ -13,7 +13,6 @@ dependencies:
   connectivity_plus: ^6.0.5
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
-  flutter_ringtone_player: ^4.0.0+4
   shared_preferences: ^2.3.2
   permission_handler: ^11.3.1
 flutter:
