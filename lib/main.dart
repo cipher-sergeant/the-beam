@@ -10,6 +10,7 @@ import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 int now() => DateTime.now().millisecondsSinceEpoch;
@@ -161,13 +162,14 @@ class ChildScreen extends StatefulWidget {
 class _ChildScreenState extends State<ChildScreen> {
   StreamSubscription<Position>? _loc;
   Timer? _poll;
-  int? _lastRing;
-  bool _on = false;
+  int? _lastRing, _sentAt;
+  bool _on = false, _gpsOff = false;
   String _msg = '';
 
   @override
   void initState() {
     super.initState();
+    widget.s.write({'hello': now()});
     _poll = Timer.periodic(const Duration(seconds: 8), (_) => _check());
     _check();
     _start();
@@ -185,12 +187,20 @@ class _ChildScreenState extends State<ChildScreen> {
   }
 
   Future<void> _start() async {
+    await Permission.notification.request();
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      setState(() { _on = false; _gpsOff = true; _msg = 'Location is turned off on this phone. Turn it on, then flip the switch again.'; });
+      return;
+    }
     var perm = await Geolocator.checkPermission();
     if (perm == LocationPermission.denied) perm = await Geolocator.requestPermission();
     if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
-      setState(() => _msg = 'Location permission is needed. Allow it in Settings.');
+      setState(() { _on = false; _gpsOff = false; _msg = 'Location permission is blocked. Open Settings > Apps > Family Safe > Permissions > Location and allow it.'; });
       return;
     }
+    setState(() { _on = true; _gpsOff = false; _msg = 'Finding your location…'; });
+    await _now();
+    await _loc?.cancel();
     _loc = Geolocator.getPositionStream(
       locationSettings: AndroidSettings(
         accuracy: LocationAccuracy.high,
@@ -203,28 +213,47 @@ class _ChildScreenState extends State<ChildScreen> {
           enableWakeLock: true,
         ),
       ),
-    ).listen(_push);
-    setState(() { _on = true; _msg = ''; });
+    ).listen(_push, onError: (e) {
+      if (mounted) setState(() => _msg = 'Location problem: $e');
+    });
+  }
+
+  Future<void> _now() async {
+    try {
+      final p = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 40)));
+      await _push(p);
+    } catch (e) {
+      if (mounted) setState(() => _msg = 'Could not get a location yet. Go near a window or outside and try again. ($e)');
+    }
   }
 
   Future<void> _stop() async {
     await _loc?.cancel();
-    setState(() => _on = false);
+    setState(() { _on = false; _msg = ''; });
   }
 
   Future<void> _push(Position p) async {
-    final b = Battery();
-    final net = await Connectivity().checkConnectivity();
-    await widget.s.write({
-      'lat': p.latitude,
-      'lng': p.longitude,
-      'acc': p.accuracy,
-      'battery': await b.batteryLevel,
-      'charging': await b.batteryState == BatteryState.charging,
-      'net': net.contains(ConnectivityResult.wifi)
+    final data = <String, Object>{'lat': p.latitude, 'lng': p.longitude, 'acc': p.accuracy, 'at': now()};
+    try {
+      final b = Battery();
+      data['battery'] = await b.batteryLevel;
+      data['charging'] = await b.batteryState == BatteryState.charging;
+    } catch (_) {
+      data['battery'] = -1;
+    }
+    try {
+      final net = await Connectivity().checkConnectivity();
+      data['net'] = net.contains(ConnectivityResult.wifi)
           ? 'Wi‑Fi'
-          : net.contains(ConnectivityResult.mobile) ? 'Mobile data' : 'Offline',
-      'at': now(),
+          : net.contains(ConnectivityResult.mobile) ? 'Mobile data' : 'Offline';
+    } catch (_) {
+      data['net'] = 'Unknown';
+    }
+    final ok = await widget.s.write(data);
+    if (!mounted) return;
+    setState(() {
+      if (ok) { _sentAt = now(); _msg = ''; } else { _msg = 'Could not send. Check the internet.'; }
     });
   }
 
@@ -248,7 +277,15 @@ class _ChildScreenState extends State<ChildScreen> {
               value: _on,
               onChanged: (v) => v ? _start() : _stop(),
             ),
-            if (_msg.isNotEmpty) Text(_msg, style: const TextStyle(color: Colors.red)),
+            Text(_sentAt == null ? 'Nothing sent yet.' : 'Last sent ${ago(_sentAt)}.'),
+            if (_msg.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(_msg, style: TextStyle(color: _msg.startsWith('Finding') ? null : Colors.red)),
+            ],
+            const SizedBox(height: 12),
+            if (_gpsOff)
+              OutlinedButton(onPressed: Geolocator.openLocationSettings, child: const Text('Open location settings')),
+            if (_on) OutlinedButton(onPressed: _now, child: const Text('Send my location now')),
             const Spacer(),
             SizedBox(
               width: double.infinity,
@@ -308,39 +345,47 @@ class _ParentScreenState extends State<ParentScreen> {
   @override
   Widget build(BuildContext context) {
     final d = this.d;
+    final sos = d?['sos'] as int?;
+    final sosOn = sos != null && now() - sos < 15 * 60000;
     return Scaffold(
       appBar: AppBar(title: const Text('My child'), actions: [
         IconButton(tooltip: 'Copy pairing code', icon: const Icon(Icons.copy), onPressed: _copy),
       ]),
-      body: d == null || d['lat'] == null
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  const Text('Waiting for your child’s phone.\nEnter this pairing code there:', textAlign: TextAlign.center),
-                  const SizedBox(height: 12),
-                  SelectableText(widget.s.key, style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: 12),
-                  FilledButton.tonal(onPressed: _copy, child: const Text('Copy code')),
-                ]),
-              ),
-            )
-          : _live(d),
+      body: Column(children: [
+        if (sosOn)
+          Container(
+            width: double.infinity,
+            color: Colors.red.shade100,
+            padding: const EdgeInsets.all(12),
+            child: Text('Your child asked for help ${ago(sos)}.', style: const TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        Expanded(child: d != null && d['lat'] != null ? _live(d) : _waiting(d)),
+      ]),
     );
   }
 
+  Widget _waiting(Map<String, dynamic>? d) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text(
+              d?['hello'] != null
+                  ? 'Your child’s phone is connected.\nWaiting for its location…'
+                  : 'Waiting for your child’s phone.\nEnter this pairing code there:',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            SelectableText(widget.s.key, style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            FilledButton.tonal(onPressed: _copy, child: const Text('Copy code')),
+          ]),
+        ),
+      );
+
   Widget _live(Map<String, dynamic> d) {
     final pos = LatLng((d['lat'] as num).toDouble(), (d['lng'] as num).toDouble());
-    final sos = d['sos'] as int?;
-    final sosOn = sos != null && now() - sos < 15 * 60000;
+    final bat = d['battery'] as int? ?? -1;
     return Column(children: [
-      if (sosOn)
-        Container(
-          width: double.infinity,
-          color: Colors.red.shade100,
-          padding: const EdgeInsets.all(12),
-          child: Text('Your child asked for help ${ago(sos)}.', style: const TextStyle(fontWeight: FontWeight.bold)),
-        ),
       Expanded(
         child: FlutterMap(
           key: ValueKey(pos),
@@ -362,7 +407,7 @@ class _ParentScreenState extends State<ParentScreen> {
           Wrap(spacing: 8, children: [
             Chip(
                 avatar: Icon(d['charging'] == true ? Icons.battery_charging_full : Icons.battery_std, size: 18),
-                label: Text('${d['battery']}%')),
+                label: Text(bat < 0 ? 'Battery ?' : '$bat%')),
             Chip(avatar: const Icon(Icons.signal_cellular_alt, size: 18), label: Text('${d['net']}')),
             Chip(avatar: const Icon(Icons.schedule, size: 18), label: Text('Updated ${ago(d['at'] as int?)}')),
           ]),
