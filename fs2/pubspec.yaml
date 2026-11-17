@@ -1,0 +1,19 @@
+name: family_safe
+description: Parent and child location and status sharing.
+publish_to: none
+version: 1.0.0
+environment:
+  sdk: ^3.4.0
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.2
+  geolocator: ^13.0.1
+  battery_plus: ^6.0.3
+  connectivity_plus: ^6.0.5
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+  flutter_ringtone_player: ^4.0.0+4
+  shared_preferences: ^2.3.2
+flutter:
+  uses-material-design: true
