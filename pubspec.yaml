@@ -15,5 +15,6 @@ dependencies:
   latlong2: ^0.9.1
   flutter_ringtone_player: ^4.0.0+4
   shared_preferences: ^2.3.2
+  permission_handler: ^11.3.1
 flutter:
   uses-material-design: true
