@@ -19,6 +19,19 @@ jobs:
           channel: stable
       - name: Build
         run: |
+          mkdir -p ~/.gradle
+          cat > ~/.gradle/init.gradle <<'EOF'
+          gradle.beforeProject { p ->
+            p.afterEvaluate {
+              if (p.hasProperty('android')) {
+                def c = p.android.compileSdk
+                if (c == null || c < 36) {
+                  p.android.compileSdk = 36
+                }
+              }
+            }
+          }
+          EOF
           flutter create --org com.example --project-name family_safe --platforms android app
           cp -r lib pubspec.yaml app/
           P=""
